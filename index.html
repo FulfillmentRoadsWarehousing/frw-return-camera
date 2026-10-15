@@ -452,5 +452,108 @@ async function submitFRWTestPhotos() {
 }
 </script>
 
+<!-- FRW Automatic Return Detection Test -->
+<hr>
+<h3>Automatic Return Detection</h3>
+
+<p id="autoStatus">Automatic detection is off</p>
+
+<button id="startAutoButton" onclick="startAutoDetection()">
+  Start Auto Detection
+</button>
+
+<button onclick="stopAutoDetection()">
+  Stop
+</button>
+
+<script>
+let autoDetectionTimer = null;
+let autoCheckRunning = false;
+
+async function checkForTestReturn() {
+  if (!frwAccessToken || autoCheckRunning) return;
+
+  autoCheckRunning = true;
+
+  try {
+    const url =
+      'https://script.googleapis.com/v1/scripts/' +
+      encodeURIComponent(FRW_DEPLOYMENT_ID) +
+      ':run';
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + frwAccessToken,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        function: 'getTestPendingRejects',
+        parameters: []
+      })
+    });
+
+    const data = await response.json();
+
+    if (!response.ok || data.error) {
+      throw new Error(
+        data.error?.message || 'API request failed'
+      );
+    }
+
+    const returns = data.response?.result || [];
+    const status = document.getElementById('autoStatus');
+
+    if (returns.length > 0) {
+      const item = returns[0];
+
+      status.textContent =
+        'Reject detected: Order ' + item.orderNumber +
+        ' — ' + item.customer;
+
+    } else {
+      status.textContent =
+        'Monitoring — no rejected returns pending';
+    }
+
+  } catch (error) {
+    document.getElementById('autoStatus').textContent =
+      'Monitoring error: ' + error.message;
+  } finally {
+    autoCheckRunning = false;
+  }
+}
+
+function startAutoDetection() {
+  if (!frwAccessToken) {
+    document.getElementById('autoStatus').textContent =
+      'Please click Authorize FRW Returns first.';
+    return;
+  }
+
+  if (autoDetectionTimer !== null) return;
+
+  document.getElementById('autoStatus').textContent =
+    'Starting automatic detection...';
+
+  checkForTestReturn();
+
+  autoDetectionTimer = setInterval(
+    checkForTestReturn,
+    10000
+  );
+}
+
+function stopAutoDetection() {
+  if (autoDetectionTimer !== null) {
+    clearInterval(autoDetectionTimer);
+    autoDetectionTimer = null;
+  }
+
+  document.getElementById('autoStatus').textContent =
+    'Automatic detection stopped';
+}
+</script>
+
 </body>
 </html>
