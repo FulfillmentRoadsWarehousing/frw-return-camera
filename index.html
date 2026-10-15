@@ -1,0 +1,106 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport"
+        content="width=device-width, initial-scale=1">
+  <title>FRW Return Photos</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      max-width: 800px;
+      margin: 30px auto;
+      padding: 20px;
+      text-align: center;
+    }
+    video {
+      width: 100%;
+      max-height: 450px;
+      background: #222;
+      border-radius: 10px;
+    }
+    button {
+      padding: 14px 24px;
+      margin: 10px;
+      cursor: pointer;
+      font-size: 16px;
+    }
+    img {
+      max-width: 45%;
+      margin: 5px;
+      border-radius: 8px;
+    }
+    #status {
+      color: #555;
+    }
+  </style>
+</head>
+<body>
+  <h2>FRW Return Photo Capture</h2>
+  <p id="status">Camera not started</p>
+
+  <video id="video" autoplay playsinline muted></video>
+
+  <div>
+    <button onclick="startCamera()">Start Camera</button>
+    <button onclick="takePhoto()">Capture Photo</button>
+  </div>
+
+  <h3>Captured Photos</h3>
+  <div id="photos"></div>
+
+  <script>
+    let stream;
+    let photoCount = 0;
+
+    async function startCamera() {
+      try {
+        if (stream) {
+          stream.getTracks().forEach(track => track.stop());
+        }
+
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: true,
+          audio: false
+        });
+
+        const video = document.getElementById('video');
+        video.srcObject = stream;
+        await video.play();
+
+        document.getElementById('status').textContent =
+          'Camera connected successfully';
+      } catch (error) {
+        document.getElementById('status').textContent =
+          'Camera error: ' + error.message;
+      }
+    }
+
+    function takePhoto() {
+      const video = document.getElementById('video');
+
+      if (!video.videoWidth) {
+        alert('Please start the camera first.');
+        return;
+      }
+
+      const canvas = document.createElement('canvas');
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+
+      const context = canvas.getContext('2d');
+      context.drawImage(video, 0, 0);
+
+      const image = document.createElement('img');
+      image.src = canvas.toDataURL('image/jpeg', 0.9);
+
+      document.getElementById('photos').appendChild(image);
+
+      photoCount++;
+      document.getElementById('status').textContent =
+        photoCount + ' photo(s) captured';
+    }
+  </script>
+</body>
+</html>
