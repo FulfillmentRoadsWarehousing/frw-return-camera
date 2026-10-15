@@ -345,5 +345,112 @@
   }
 </script>
 
+<!-- FRW Camera Photo Upload Test -->
+<hr>
+<h3>Submit Test Photos</h3>
+
+<p>Upload captured photos to FRW-TEST-001</p>
+
+<button id="submitTestButton"
+        onclick="submitFRWTestPhotos()">
+  Submit Photos
+</button>
+
+<p id="uploadStatus">No photos submitted</p>
+
+<script>
+async function submitFRWTestPhotos() {
+  const status = document.getElementById('uploadStatus');
+  const button = document.getElementById('submitTestButton');
+
+  if (!frwAccessToken) {
+    status.textContent =
+      'Please authorize FRW Returns first.';
+    return;
+  }
+
+  const images = Array.from(
+    document.querySelectorAll('#photos img')
+  );
+
+  if (!images.length) {
+    status.textContent =
+      'Capture at least one photo first.';
+    return;
+  }
+
+  if (images.length > 5) {
+    status.textContent =
+      'Maximum of 5 photos per submission.';
+    return;
+  }
+
+  const photos = images.map(image => image.src);
+
+  if (photos.some(photo =>
+      !photo.startsWith('data:image/jpeg;base64,'))) {
+    status.textContent = 'Invalid photo format.';
+    return;
+  }
+
+  button.disabled = true;
+  status.textContent = 'Uploading photos...';
+
+  const url =
+    'https://script.googleapis.com/v1/scripts/' +
+    encodeURIComponent(FRW_DEPLOYMENT_ID) +
+    ':run';
+
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + frwAccessToken,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        function: 'uploadCameraTestPhotos',
+        parameters: [{
+          row: 3,
+          orderNumber: 'FRW-TEST-001',
+          photos: photos
+        }]
+      })
+    });
+
+    const data = await response.json();
+
+    if (!response.ok || data.error) {
+      const message =
+        data.error?.message ||
+        data.error?.details?.[0]?.errorMessage ||
+        'API request failed';
+
+      throw new Error(message);
+    }
+
+    const result = data.response?.result;
+
+    if (!result?.success) {
+      throw new Error('Upload was not confirmed.');
+    }
+
+    status.textContent =
+      'Success! ' + result.photoCount +
+      ' photo(s) saved to Google Drive.';
+
+    // Prevent accidental resubmission.
+    button.disabled = true;
+
+  } catch (error) {
+    status.textContent =
+      'Upload not confirmed: ' + error.message +
+      '. Check Drive and J3 before retrying.';
+
+    // Keep disabled until the result is verified.
+  }
+}
+</script>
+
 </body>
 </html>
