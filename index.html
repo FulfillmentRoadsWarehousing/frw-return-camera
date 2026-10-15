@@ -1,559 +1,265 @@
-
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport"
-        content="width=device-width, initial-scale=1">
-  <title>FRW Return Photos</title>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FRW Return Photo Capture</title>
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
   <style>
-    body {
-      font-family: Arial, sans-serif;
-      max-width: 800px;
-      margin: 30px auto;
-      padding: 20px;
-      text-align: center;
-    }
-    video {
-      width: 100%;
-      max-height: 450px;
-      background: #222;
-      border-radius: 10px;
-    }
-    button {
-      padding: 14px 24px;
-      margin: 10px;
-      cursor: pointer;
-      font-size: 16px;
-    }
-    img {
-      max-width: 45%;
-      margin: 5px;
-      border-radius: 8px;
-    }
-    #status {
-      color: #555;
-    }
+    :root { color-scheme: light; --green:#207447; --border:#dce2e8; --muted:#596575; --bg:#f5f7f9; }
+    * { box-sizing:border-box; }
+    body { margin:0; font:16px/1.45 system-ui,-apple-system,Segoe UI,Arial,sans-serif; background:var(--bg); color:#182331; }
+    main { max-width:1050px; margin:24px auto; padding:0 16px 40px; }
+    header, .panel { background:white; border:1px solid var(--border); border-radius:12px; padding:18px; margin-bottom:14px; }
+    header { display:flex; justify-content:space-between; flex-wrap:wrap; gap:14px; align-items:center; }
+    h1 { font-size:24px; margin:0; } h2 { font-size:18px; margin:0 0 12px; }
+    p { margin:8px 0; } .muted { color:var(--muted); font-size:14px; }
+    .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+    button,select { font:inherit; padding:10px 13px; border:1px solid #acb8c5; border-radius:8px; background:white; color:#182331; }
+    button { cursor:pointer; } button:disabled { cursor:not-allowed; opacity:.5; }
+    button.primary { background:var(--green); color:white; border-color:var(--green); }
+    button.danger { border-color:#b34a4a; color:#a22525; }
+    .pill { display:inline-block; background:#ebf3ed; color:#17613a; border-radius:999px; padding:5px 10px; font-size:13px; }
+    .warn { color:#9a4c12; } .error { color:#ae2323; }
+    .order { background:#f2f5f8; border-radius:8px; padding:14px; margin-top:12px; }
+    .order strong { font-size:19px; } .order div { overflow-wrap:anywhere; }
+    .layout { display:grid; grid-template-columns:minmax(0, 1.6fr) minmax(260px,1fr); gap:14px; }
+    video { background:#19212b; width:100%; aspect-ratio:16/9; object-fit:contain; border-radius:9px; }
+    #thumbnails { display:grid; grid-template-columns:repeat(auto-fill,minmax(140px,1fr)); gap:10px; margin-top:14px; }
+    .photo { border:1px solid var(--border); border-radius:8px; overflow:hidden; padding:6px; }
+    .photo img { width:100%; aspect-ratio:4/3; object-fit:contain; background:#f3f3f3; }
+    .photo button { width:100%; padding:7px; font-size:13px; }
+    #message { min-height:22px; white-space:pre-wrap; }
+    .hidden { display:none !important; }
+    @media(max-width:760px) { .layout { grid-template-columns:1fr; } }
   </style>
 </head>
 <body>
-  <h2>FRW Return Photo Capture</h2>
-  <p id="status">Camera not started</p>
+<main>
+  <header>
+    <div><h1>FRW Return Photo Capture</h1><div class="muted">One-station reject photo workflow</div></div>
+    <div class="row"><span id="authStatus" class="pill">Not authorized</span><button id="authorizeBtn">Authorize FRW Returns</button></div>
+  </header>
 
-  <video id="video" autoplay playsinline muted></video>
+  <section class="panel">
+    <div class="row">
+      <label for="mode"><strong>Mode</strong></label>
+      <select id="mode"><option value="test">Test Mode</option><option value="live">Live Mode (view only)</option></select>
+      <span id="modeHint" class="muted">Only the FRW Photo Test tab can receive uploads.</span>
+    </div>
+  </section>
 
-  <div>
-    <button onclick="startCamera()">Start Camera</button>
-    <button onclick="takePhoto()">Capture Photo</button>
+  <div class="layout">
+    <section class="panel">
+      <h2>Camera</h2>
+      <video id="camera" autoplay muted playsinline></video>
+      <p id="cameraStatus" class="muted">Camera not started</p>
+      <div class="row">
+        <button id="startCamera">Start Camera</button>
+        <button id="capture" class="primary" disabled>Capture Photo</button>
+        <button id="clearPhotos" disabled>Clear Photos</button>
+      </div>
+      <p class="muted">Capture up to 5 photos. Remove individual shots below before submitting.</p>
+      <div id="thumbnails"></div>
+    </section>
+
+    <section class="panel">
+      <h2>Return waiting for photos</h2>
+      <p id="queueStatus" class="muted">Authorize to start checking the queue.</p>
+      <div class="row"><label for="returnSelect">Pending return:</label><select id="returnSelect" disabled><option>No returns loaded</option></select></div>
+      <div id="currentOrder" class="order">No return selected.</div>
+      <p class="muted">Queue checks approximately every 10 seconds. The current return stays selected while photos are being captured.</p>
+      <div class="row"><button id="refreshQueue" disabled>Refresh Queue</button><button id="submit" class="primary" disabled>Submit Photos</button></div>
+      <p id="message" role="status" aria-live="polite"></p>
+      <p id="liveNotice" class="muted hidden">Live Mode is read-only. Production photo uploads remain disabled.</p>
+    </section>
   </div>
-
-  <h3>Captured Photos</h3>
-  <div id="photos"></div>
-
-  <script>
-    let stream;
-    let photoCount = 0;
-
-    async function startCamera() {
-      try {
-        if (stream) {
-          stream.getTracks().forEach(track => track.stop());
-        }
-
-        stream = await navigator.mediaDevices.getUserMedia({
-          video: true,
-          audio: false
-        });
-
-        const video = document.getElementById('video');
-        video.srcObject = stream;
-        await video.play();
-
-        document.getElementById('status').textContent =
-          'Camera connected successfully';
-      } catch (error) {
-        document.getElementById('status').textContent =
-          'Camera error: ' + error.message;
-      }
-    }
-
-    function takePhoto() {
-      const video = document.getElementById('video');
-
-      if (!video.videoWidth) {
-        alert('Please start the camera first.');
-        return;
-      }
-
-      const canvas = document.createElement('canvas');
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-
-      const context = canvas.getContext('2d');
-      context.drawImage(video, 0, 0);
-
-      const image = document.createElement('img');
-      image.src = canvas.toDataURL('image/jpeg', 0.9);
-
-      document.getElementById('photos').appendChild(image);
-
-      photoCount++;
-      document.getElementById('status').textContent =
-        photoCount + ' photo(s) captured';
-    }
-  </script>
-
-<!-- FRW Google Sign-In Test -->
-<hr>
-<h3>FRW Account Connection</h3>
-<p id="googleStatus">Not signed in</p>
-<div id="googleSignIn"></div>
-
-<script src="https://accounts.google.com/gsi/client"></script>
+</main>
 <script>
-  const GOOGLE_CLIENT_ID =
-    '758478931940-1dbs3udk5t7oeq9lgvubq9255t76kfon.apps.googleusercontent.com';
+'use strict';
+// Copy the PUBLIC OAuth Web Client ID from your existing GitHub index.html.
+// Never put a client secret, API key, or access token in this file.
+const GOOGLE_CLIENT_ID = '758478931940-1dbs3udk5t7oeq9lgvubq9255t76kfon.apps.googleusercontent.com';
+const DEPLOYMENT_ID = 'AKfycbzzw1IQX8k5PHQj5d_BU2O4RF_Myy-Rxs8ZokOmMwJXAqnhJYM77C9csjgVRL6Ejpd4';
+const SCOPES = 'https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/spreadsheets';
+const API_URL = `https://script.googleapis.com/v1/scripts/${encodeURIComponent(DEPLOYMENT_ID)}:run`;
+const $ = id => document.getElementById(id);
+const state = { token: null, expiresAt: 0, stream: null, photos: [], pending: [], selected: null, busy: false, polling: false, uploadUncertain: false };
+let tokenClient = null;
 
-  function handleGoogleSignIn(response) {
-    try {
-      // Decode the token for display only.
-      // Actual backend authorization will verify it.
-      const payload = response.credential.split('.')[1];
-      const decoded = JSON.parse(
-        atob(
-          payload.replace(/-/g, '+')
-            .replace(/_/g, '/')
-        )
-      );
-
-      document.getElementById('googleStatus')
-        .textContent =
-          'Signed in as: ' + decoded.email;
-
-    } catch (error) {
-      document.getElementById('googleStatus')
-        .textContent =
-          'Sign-in response could not be read.';
-    }
+function message(text, error = false) {
+  $('message').textContent = text;
+  $('message').className = error ? 'error' : '';
+}
+function authorized() { return !!state.token && Date.now() < state.expiresAt - 60000; }
+function invalidateAuth() {
+  state.token = null; state.expiresAt = 0;
+  $('authStatus').textContent = 'Authorization needed';
+  $('refreshQueue').disabled = true;
+  $('queueStatus').textContent = 'Click Authorize FRW Returns to reconnect.';
+  updateControls();
+}
+function authorize() {
+  if (!GOOGLE_CLIENT_ID.endsWith('.apps.googleusercontent.com')) {
+    message('Add your existing Google OAuth Client ID to index.html first.', true); return;
   }
-
-  google.accounts.id.initialize({
+  if (!window.google?.accounts?.oauth2) {
+    message('Google authorization library is not ready. Refresh and try again.', true); return;
+  }
+  tokenClient ||= google.accounts.oauth2.initTokenClient({
     client_id: GOOGLE_CLIENT_ID,
-    callback: handleGoogleSignIn
+    scope: SCOPES,
+    callback: response => {
+      if (response.error || !response.access_token) {
+        message('Authorization failed: ' + (response.error || 'no token'), true); return;
+      }
+      state.token = response.access_token;
+      state.expiresAt = Date.now() + Number(response.expires_in || 3500) * 1000;
+      $('authStatus').textContent = 'FRW authorized';
+      $('refreshQueue').disabled = false;
+      message('Connected. Monitoring for rejects.');
+      updateControls();
+      refreshQueue();
+    }
   });
-
-  google.accounts.id.renderButton(
-    document.getElementById('googleSignIn'),
-    {
-      theme: 'outline',
-      size: 'large',
-      text: 'signin_with'
-    }
-  );
-</script>
-
-<!-- FRW Return Queue Connection Test -->
-<hr>
-<h3>Pending Rejected Returns</h3>
-<p id="queueStatus">Not connected</p>
-
-<button onclick="authorizeAndLoadReturns()">
-  Authorize FRW Returns
-</button>
-
-<pre id="queueResults"></pre>
-
-<script>
-  const FRW_DEPLOYMENT_ID =
-    'AKfycbzzw1IQX8k5PHQj5d_BU2O4RF_Myy-Rxs8ZokOmMwJXAqnhJYM77C9csjgVRL6Ejpd4';
-
-  const FRW_SCOPES = [
-    'https://www.googleapis.com/auth/drive',
-    'https://www.googleapis.com/auth/spreadsheets'
-  ].join(' ');
-
-  let frwTokenClient;
-
-  function authorizeAndLoadReturns() {
-    const status = document.getElementById('queueStatus');
-
-    if (!window.google?.accounts?.oauth2) {
-      status.textContent = 'Google authorization library unavailable.';
-      return;
-    }
-
-    frwTokenClient = google.accounts.oauth2.initTokenClient({
-      client_id: GOOGLE_CLIENT_ID,
-      scope: FRW_SCOPES,
-
-      callback: async (response) => {
-        if (response.error || !response.access_token) {
-          status.textContent =
-            'Authorization failed: ' +
-            (response.error || 'No access token');
-          return;
-        }
-
-        status.textContent = 'Authorized. Loading returns...';
-
-        await loadPendingReturns(response.access_token);
-      }
-    });
-
-    frwTokenClient.requestAccessToken({
-      prompt: 'consent'
-    });
+  tokenClient.requestAccessToken({prompt: 'consent'});
+}
+async function callScript(fn, args = []) {
+  if (!authorized()) { invalidateAuth(); throw new Error('Google authorization expired. Reauthorize.'); }
+  const res = await fetch(API_URL, {
+    method:'POST', headers: {Authorization:`Bearer ${state.token}`, 'Content-Type':'application/json'},
+    body:JSON.stringify({function:fn, parameters:args})
+  });
+  let data;
+  try { data = await res.json(); } catch { throw new Error('Google returned an unreadable response.'); }
+  if (res.status === 401 || res.status === 403) invalidateAuth();
+  if (!res.ok || data.error) throw new Error(data.error?.message || `API error ${res.status}`);
+  if (data.response?.error) throw new Error(data.response.error.message || 'Script execution failed');
+  return data.response?.result ?? null;
+}
+function key(item) { return `${item.row}:${item.orderNumber}`; }
+function renderSelected() {
+  const el = $('currentOrder'); el.replaceChildren();
+  if (!state.selected) { el.textContent = 'No pending return selected.'; return; }
+  const title = document.createElement('strong'); title.textContent = `Order #${state.selected.orderNumber}`;
+  const customer = document.createElement('div'); customer.textContent = state.selected.customer || 'Unknown customer';
+  const sku = document.createElement('div'); sku.textContent = state.selected.sku || 'No SKU';
+  const row = document.createElement('div'); row.className = 'muted'; row.textContent = `Spreadsheet row ${state.selected.row}`;
+  el.append(title, customer, sku, row);
+}
+function renderQueue() {
+  const select = $('returnSelect'); select.replaceChildren();
+  if (!state.pending.length) {
+    select.add(new Option('No pending rejects', '')); select.disabled = true;
+  } else {
+    for (const item of state.pending) select.add(new Option(`${item.orderNumber} — ${item.customer}`, key(item)));
+    select.disabled = state.busy || state.photos.length > 0;
+    if (state.selected) select.value = key(state.selected);
   }
-
-  async function loadPendingReturns(accessToken) {
-    const status = document.getElementById('queueStatus');
-
-    const url =
-      'https://script.googleapis.com/v1/scripts/' +
-      encodeURIComponent(FRW_DEPLOYMENT_ID) +
-      ':run';
-
-    try {
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Authorization': 'Bearer ' + accessToken,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          function: 'getPendingRejects',
-          parameters: []
-        })
-      });
-
-      const data = await response.json();
-
-      if (!response.ok || data.error || data.error?.details) {
-        status.textContent = 'API request failed';
-        document.getElementById('queueResults')
-          .textContent = JSON.stringify(data, null, 2);
-        return;
-      }
-
-      const result = data.response?.result || [];
-
-      status.textContent =
-        'Connected! Pending returns: ' + result.length;
-
-      document.getElementById('queueResults')
-        .textContent = JSON.stringify(result, null, 2);
-
-    } catch (error) {
-      status.textContent = 'Connection failed: ' + error.message;
-    }
-  }
-</script>
-
-<!-- FRW Test Return Queue -->
-<hr>
-<h3>Test Return</h3>
-
-<button onclick="loadFRWTestReturn()">
-  Load Test Return
-</button>
-
-<p id="testReturnStatus">Not loaded</p>
-<div id="testReturnDetails"></div>
-
-<script>
-  let frwAccessToken = null;
-
-  // Retain the token in memory after authorization.
-  // Do not save it to localStorage or GitHub.
-  const originalLoadPendingReturns = loadPendingReturns;
-
-  loadPendingReturns = async function(accessToken) {
-    frwAccessToken = accessToken;
-    return originalLoadPendingReturns(accessToken);
-  };
-
-  async function loadFRWTestReturn() {
-    const status = document.getElementById(
-      'testReturnStatus'
-    );
-
-    const details = document.getElementById(
-      'testReturnDetails'
-    );
-
-    if (!frwAccessToken) {
-      status.textContent =
-        'Click Authorize FRW Returns first.';
-      return;
-    }
-
-    const url =
-      'https://script.googleapis.com/v1/scripts/' +
-      encodeURIComponent(FRW_DEPLOYMENT_ID) +
-      ':run';
-
-    status.textContent = 'Loading test return...';
-
-    try {
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: {
-          Authorization: 'Bearer ' + frwAccessToken,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          function: 'getTestPendingRejects',
-          parameters: []
-        })
-      });
-
-      const data = await response.json();
-
-      if (!response.ok || data.error) {
-        status.textContent = 'API request failed';
-        details.textContent =
-          JSON.stringify(data.error || data, null, 2);
-        return;
-      }
-
-      const returns = data.response?.result || [];
-
-      if (!returns.length) {
-        status.textContent = 'No test return found.';
-        details.textContent = '';
-        return;
-      }
-
-      const item = returns[0];
-
-      status.textContent = 'Test return loaded successfully';
-
-      // Use textContent rather than injecting spreadsheet
-      // values as HTML.
-      details.textContent =
-        'Order: ' + item.orderNumber + '\n' +
-        'Customer: ' + item.customer + '\n' +
-        'SKU: ' + item.sku + '\n' +
-        'Spreadsheet row: ' + item.row;
-
-      details.style.whiteSpace = 'pre-line';
-
-    } catch (error) {
-      status.textContent = 'Connection failed';
-      details.textContent = error.message;
-    }
-  }
-</script>
-
-<!-- FRW Camera Photo Upload Test -->
-<hr>
-<h3>Submit Test Photos</h3>
-
-<p>Upload captured photos to FRW-TEST-001</p>
-
-<button id="submitTestButton"
-        onclick="submitFRWTestPhotos()">
-  Submit Photos
-</button>
-
-<p id="uploadStatus">No photos submitted</p>
-
-<script>
-async function submitFRWTestPhotos() {
-  const status = document.getElementById('uploadStatus');
-  const button = document.getElementById('submitTestButton');
-
-  if (!frwAccessToken) {
-    status.textContent =
-      'Please authorize FRW Returns first.';
-    return;
-  }
-
-  const images = Array.from(
-    document.querySelectorAll('#photos img')
-  );
-
-  if (!images.length) {
-    status.textContent =
-      'Capture at least one photo first.';
-    return;
-  }
-
-  if (images.length > 5) {
-    status.textContent =
-      'Maximum of 5 photos per submission.';
-    return;
-  }
-
-  const photos = images.map(image => image.src);
-
-  if (photos.some(photo =>
-      !photo.startsWith('data:image/jpeg;base64,'))) {
-    status.textContent = 'Invalid photo format.';
-    return;
-  }
-
-  button.disabled = true;
-  status.textContent = 'Uploading photos...';
-
-  const url =
-    'https://script.googleapis.com/v1/scripts/' +
-    encodeURIComponent(FRW_DEPLOYMENT_ID) +
-    ':run';
-
+  renderSelected(); updateControls();
+}
+async function refreshQueue() {
+  if (!authorized() || state.polling || state.busy) return;
+  state.polling = true;
   try {
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Authorization': 'Bearer ' + frwAccessToken,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        function: 'uploadCameraTestPhotos',
-        parameters: [{
-          row: 3,
-          orderNumber: 'FRW-TEST-001',
-          photos: photos
-        }]
-      })
-    });
-
-    const data = await response.json();
-
-    if (!response.ok || data.error) {
-      const message =
-        data.error?.message ||
-        data.error?.details?.[0]?.errorMessage ||
-        'API request failed';
-
-      throw new Error(message);
+    const fn = $('mode').value === 'test' ? 'getTestPendingRejects' : 'getPendingRejects';
+    const results = await callScript(fn);
+    if (!Array.isArray(results)) throw new Error('Unexpected queue response.');
+    state.pending = results;
+    // Don't swap orders while an employee has captured photographs.
+    if (!state.photos.length) {
+      const current = state.selected && results.find(x => key(x) === key(state.selected));
+      state.selected = current || results[0] || null;
     }
-
-    const result = data.response?.result;
-
-    if (!result?.success) {
-      throw new Error('Upload was not confirmed.');
-    }
-
-    status.textContent =
-      'Success! ' + result.photoCount +
-      ' photo(s) saved to Google Drive.';
-
-    // Prevent accidental resubmission.
-    button.disabled = true;
-
-  } catch (error) {
-    status.textContent =
-      'Upload not confirmed: ' + error.message +
-      '. Check Drive and J3 before retrying.';
-
-    // Keep disabled until the result is verified.
-  }
+    $('queueStatus').textContent = results.length ? `${results.length} return(s) awaiting photos` : 'Monitoring — no pending rejects';
+    renderQueue();
+  } catch (err) {
+    $('queueStatus').textContent = 'Queue connection error';
+    message(err.message, true);
+  } finally { state.polling = false; }
 }
-</script>
-
-<!-- FRW Automatic Return Detection Test -->
-<hr>
-<h3>Automatic Return Detection</h3>
-
-<p id="autoStatus">Automatic detection is off</p>
-
-<button id="startAutoButton" onclick="startAutoDetection()">
-  Start Auto Detection
-</button>
-
-<button onclick="stopAutoDetection()">
-  Stop
-</button>
-
-<script>
-let autoDetectionTimer = null;
-let autoCheckRunning = false;
-
-async function checkForTestReturn() {
-  if (!frwAccessToken || autoCheckRunning) return;
-
-  autoCheckRunning = true;
-
+async function startCamera() {
   try {
-    const url =
-      'https://script.googleapis.com/v1/scripts/' +
-      encodeURIComponent(FRW_DEPLOYMENT_ID) +
-      ':run';
-
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Authorization': 'Bearer ' + frwAccessToken,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        function: 'getTestPendingRejects',
-        parameters: []
-      })
-    });
-
-    const data = await response.json();
-
-    if (!response.ok || data.error) {
-      throw new Error(
-        data.error?.message || 'API request failed'
-      );
-    }
-
-    const returns = data.response?.result || [];
-    const status = document.getElementById('autoStatus');
-
-    if (returns.length > 0) {
-      const item = returns[0];
-
-      status.textContent =
-        'Reject detected: Order ' + item.orderNumber +
-        ' — ' + item.customer;
-
-    } else {
-      status.textContent =
-        'Monitoring — no rejected returns pending';
-    }
-
-  } catch (error) {
-    document.getElementById('autoStatus').textContent =
-      'Monitoring error: ' + error.message;
-  } finally {
-    autoCheckRunning = false;
-  }
+    if (state.stream) state.stream.getTracks().forEach(t => t.stop());
+    const stream = await navigator.mediaDevices.getUserMedia({video:{width:{ideal:1920},height:{ideal:1080}},audio:false});
+    state.stream = stream;
+    $('camera').srcObject = stream;
+    await $('camera').play();
+    $('cameraStatus').textContent = 'Camera connected';
+    updateControls();
+  } catch(err) { $('cameraStatus').textContent = `Camera error: ${err.message}`; }
 }
-
-function startAutoDetection() {
-  if (!frwAccessToken) {
-    document.getElementById('autoStatus').textContent =
-      'Please click Authorize FRW Returns first.';
-    return;
+function capture() {
+  const video = $('camera');
+  if (!state.selected || !video.videoWidth || state.photos.length >= 5 || state.busy) return;
+  const canvas = document.createElement('canvas'); canvas.width=video.videoWidth; canvas.height=video.videoHeight;
+  canvas.getContext('2d').drawImage(video,0,0);
+  const dataUrl = canvas.toDataURL('image/jpeg',.85);
+  // Avoid queuing a photo larger than the Apps Script test-upload allowance.
+  if (Math.ceil((dataUrl.length - 23) * .75) > 5 * 1024 * 1024) {
+    message('Photo too large. Reduce camera resolution.',true); return;
   }
-
-  if (autoDetectionTimer !== null) return;
-
-  document.getElementById('autoStatus').textContent =
-    'Starting automatic detection...';
-
-  checkForTestReturn();
-
-  autoDetectionTimer = setInterval(
-    checkForTestReturn,
-    10000
-  );
+  state.photos.push(dataUrl);
+  renderPhotos(); renderQueue();
 }
-
-function stopAutoDetection() {
-  if (autoDetectionTimer !== null) {
-    clearInterval(autoDetectionTimer);
-    autoDetectionTimer = null;
+function renderPhotos() {
+  const wrap = $('thumbnails'); wrap.replaceChildren();
+  state.photos.forEach((src,i) => {
+    const box=document.createElement('div'); box.className='photo';
+    const img=document.createElement('img'); img.src=src; img.alt=`Captured photo ${i+1}`;
+    const btn=document.createElement('button'); btn.textContent='Remove photo'; btn.disabled=state.busy;
+    btn.addEventListener('click',()=>{state.photos.splice(i,1);renderPhotos();renderQueue();});
+    box.append(img,btn);wrap.append(box);
+  });
+  updateControls();
+}
+function updateControls() {
+  const test = $('mode').value === 'test';
+  $('capture').disabled = state.busy || !state.selected || !state.stream || state.photos.length>=5;
+  $('clearPhotos').disabled = state.busy || !state.photos.length;
+  $('submit').disabled = state.busy || !test || !authorized() || !state.selected || !state.photos.length || state.uploadUncertain;
+  $('submit').textContent = test ? 'Submit Test Photos' : 'Live Upload Disabled';
+  $('liveNotice').classList.toggle('hidden',test);
+  $('mode').disabled = state.busy || state.photos.length>0;
+}
+async function submit() {
+  if ($('mode').value !== 'test' || !state.selected || !state.photos.length || !authorized() || state.busy) return;
+  if (state.selected.orderNumber !== 'FRW-TEST-001' || state.selected.row !== 3) {
+    message('The selected test return did not match the expected test record.',true); return;
   }
-
-  document.getElementById('autoStatus').textContent =
-    'Automatic detection stopped';
+  state.busy=true; updateControls(); message('Uploading captured photographs...');
+  try {
+    const result = await callScript('uploadCameraTestPhotos', [{
+      row:3, orderNumber:'FRW-TEST-001', photos:[...state.photos]
+    }]);
+    if (!result?.success) throw new Error('The upload was not confirmed.');
+    message(`Success — ${result.photoCount} photo(s) saved. Column J updated.`);
+    state.photos=[]; state.selected=null; state.uploadUncertain=false; renderPhotos();
+  } catch(err) {
+    message(`Upload not confirmed: ${err.message}. Check Drive and J3 before trying again.`,true);
+    // Keep photos; block another attempt until the page is reloaded and Drive/J3 checked.
+    state.uploadUncertain = true;
+  } finally { state.busy=false; updateControls(); if (!state.uploadUncertain && !state.photos.length) refreshQueue(); }
 }
+$('authorizeBtn').addEventListener('click',authorize);
+$('startCamera').addEventListener('click',startCamera);
+$('capture').addEventListener('click',capture);
+$('clearPhotos').addEventListener('click',()=>{state.photos=[];renderPhotos();renderQueue();});
+$('refreshQueue').addEventListener('click',refreshQueue);
+$('submit').addEventListener('click',submit);
+$('returnSelect').addEventListener('change', e=>{
+  if (state.photos.length || state.busy) return;
+  state.selected = state.pending.find(x=>key(x)===e.target.value) || null;
+  renderSelected();updateControls();
+});
+$('mode').addEventListener('change',()=>{
+  state.pending=[];state.selected=null;
+  $('modeHint').textContent = $('mode').value==='test' ? 'Only the FRW Photo Test tab can receive uploads.' : 'Live returns can be viewed, but photo submissions are disabled.';
+  renderQueue();refreshQueue();
+});
+// Refresh on a fixed interval; browser tabs may throttle background polling.
+setInterval(()=>{ if(authorized()) refreshQueue(); else if(state.token) invalidateAuth(); },10000);
+renderQueue();
 </script>
-
 </body>
 </html>
