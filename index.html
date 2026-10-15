@@ -152,5 +152,102 @@
   );
 </script>
 
+<!-- FRW Return Queue Connection Test -->
+<hr>
+<h3>Pending Rejected Returns</h3>
+<p id="queueStatus">Not connected</p>
+
+<button onclick="authorizeAndLoadReturns()">
+  Authorize FRW Returns
+</button>
+
+<pre id="queueResults"></pre>
+
+<script>
+  const FRW_DEPLOYMENT_ID =
+    'AKfycbzzw1IQX8k5PHQj5d_BU2O4RF_Myy-Rxs8ZokOmMwJXAqnhJYM77C9csjgVRL6Ejpd4';
+
+  const FRW_SCOPES = [
+    'https://www.googleapis.com/auth/drive',
+    'https://www.googleapis.com/auth/spreadsheets'
+  ].join(' ');
+
+  let frwTokenClient;
+
+  function authorizeAndLoadReturns() {
+    const status = document.getElementById('queueStatus');
+
+    if (!window.google?.accounts?.oauth2) {
+      status.textContent = 'Google authorization library unavailable.';
+      return;
+    }
+
+    frwTokenClient = google.accounts.oauth2.initTokenClient({
+      client_id: GOOGLE_CLIENT_ID,
+      scope: FRW_SCOPES,
+
+      callback: async (response) => {
+        if (response.error || !response.access_token) {
+          status.textContent =
+            'Authorization failed: ' +
+            (response.error || 'No access token');
+          return;
+        }
+
+        status.textContent = 'Authorized. Loading returns...';
+
+        await loadPendingReturns(response.access_token);
+      }
+    });
+
+    frwTokenClient.requestAccessToken({
+      prompt: 'consent'
+    });
+  }
+
+  async function loadPendingReturns(accessToken) {
+    const status = document.getElementById('queueStatus');
+
+    const url =
+      'https://script.googleapis.com/v1/scripts/' +
+      encodeURIComponent(FRW_DEPLOYMENT_ID) +
+      ':run';
+
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Authorization': 'Bearer ' + accessToken,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          function: 'getPendingRejects',
+          parameters: []
+        })
+      });
+
+      const data = await response.json();
+
+      if (!response.ok || data.error || data.error?.details) {
+        status.textContent = 'API request failed';
+        document.getElementById('queueResults')
+          .textContent = JSON.stringify(data, null, 2);
+        return;
+      }
+
+      const result = data.response?.result || [];
+
+      status.textContent =
+        'Connected! Pending returns: ' + result.length;
+
+      document.getElementById('queueResults')
+        .textContent = JSON.stringify(result, null, 2);
+
+    } catch (error) {
+      status.textContent = 'Connection failed: ' + error.message;
+    }
+  }
+</script>
+
 </body>
 </html>
