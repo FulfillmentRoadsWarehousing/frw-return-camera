@@ -102,5 +102,55 @@
         photoCount + ' photo(s) captured';
     }
   </script>
+
+<!-- FRW Google Sign-In Test -->
+<hr>
+<h3>FRW Account Connection</h3>
+<p id="googleStatus">Not signed in</p>
+<div id="googleSignIn"></div>
+
+<script src="https://accounts.google.com/gsi/client"></script>
+<script>
+  const GOOGLE_CLIENT_ID =
+    '758478931940-1dbs3udk5t7oeq9lgvubq9255t76kfon.apps.googleusercontent.com';
+
+  function handleGoogleSignIn(response) {
+    try {
+      // Decode the token for display only.
+      // Actual backend authorization will verify it.
+      const payload = response.credential.split('.')[1];
+      const decoded = JSON.parse(
+        atob(
+          payload.replace(/-/g, '+')
+            .replace(/_/g, '/')
+        )
+      );
+
+      document.getElementById('googleStatus')
+        .textContent =
+          'Signed in as: ' + decoded.email;
+
+    } catch (error) {
+      document.getElementById('googleStatus')
+        .textContent =
+          'Sign-in response could not be read.';
+    }
+  }
+
+  google.accounts.id.initialize({
+    client_id: GOOGLE_CLIENT_ID,
+    callback: handleGoogleSignIn
+  });
+
+  google.accounts.id.renderButton(
+    document.getElementById('googleSignIn'),
+    {
+      theme: 'outline',
+      size: 'large',
+      text: 'signin_with'
+    }
+  );
+</script>
+
 </body>
 </html>
