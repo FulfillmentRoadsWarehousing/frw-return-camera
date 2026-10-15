@@ -44,7 +44,7 @@
   <section class="panel">
     <div class="row">
       <label for="mode"><strong>Mode</strong></label>
-      <select id="mode"><option value="test">Test Mode</option><option value="live">Live Mode (view only)</option></select>
+      <select id="mode"><option value="test">Test Mode</option><option value="live">Live Mode (upload disabled)</option></select>
       <span id="modeHint" class="muted">Only the FRW Photo Test tab can receive uploads.</span>
     </div>
   </section>
@@ -71,7 +71,7 @@
       <p class="muted">Queue checks approximately every 10 seconds. The current return stays selected while photos are being captured.</p>
       <div class="row"><button id="refreshQueue" disabled>Refresh Queue</button><button id="submit" class="primary" disabled>Submit Photos</button></div>
       <p id="message" role="status" aria-live="polite"></p>
-      <p id="liveNotice" class="muted hidden">Live Mode is read-only. Production photo uploads remain disabled.</p>
+      <p id="liveNotice" class="muted hidden">Live Mode allows camera capture but cannot upload. Production uploads remain disabled.</p>
     </section>
   </div>
 </main>
@@ -84,7 +84,7 @@ const DEPLOYMENT_ID = 'AKfycbzzw1IQX8k5PHQj5d_BU2O4RF_Myy-Rxs8ZokOmMwJXAqnhJYM77
 const SCOPES = 'https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/spreadsheets';
 const API_URL = `https://script.googleapis.com/v1/scripts/${encodeURIComponent(DEPLOYMENT_ID)}:run`;
 const $ = id => document.getElementById(id);
-const state = { token: null, expiresAt: 0, stream: null, photos: [], pending: [], selected: null, busy: false, polling: false, uploadUncertain: false };
+const state = { token: null, expiresAt: 0, stream: null, photos: [], pending: [], selected: null, busy: false, polling: false, uploadUncertain: false, submissionId: null, submissionOrder: null };
 let tokenClient = null;
 
 function message(text, error = false) {
@@ -138,6 +138,35 @@ async function callScript(fn, args = []) {
   return data.response?.result ?? null;
 }
 function key(item) { return `${item.row}:${item.orderNumber}`; }
+function createSubmissionId() {
+  // Generated once per photo batch and retained until successful submission or deliberate reset.
+  if (!window.crypto?.randomUUID) throw new Error('Secure submission IDs are unavailable in this browser.');
+  return crypto.randomUUID();
+}
+function clearBatch() {
+  state.photos = [];
+  state.submissionId = null;
+  state.submissionOrder = null;
+  state.uploadUncertain = false;
+  renderPhotos();
+  renderQueue();
+}
+function getPreparedSubmission() {
+  if (!state.selected || !state.photos.length || !state.submissionId) {
+    throw new Error('Select a return and capture photographs first.');
+  }
+  if (state.submissionOrder !== key(state.selected)) {
+    throw new Error('The selected return changed. Review the photographs before proceeding.');
+  }
+  return {
+    row: state.selected.row,
+    orderNumber: state.selected.orderNumber,
+    customer: state.selected.customer,
+    sku: state.selected.sku,
+    submissionId: state.submissionId,
+    photos: [...state.photos]
+  };
+}
 function renderSelected() {
   const el = $('currentOrder'); el.replaceChildren();
   if (!state.selected) { el.textContent = 'No pending return selected.'; return; }
@@ -199,6 +228,12 @@ function capture() {
   if (Math.ceil((dataUrl.length - 23) * .75) > 5 * 1024 * 1024) {
     message('Photo too large. Reduce camera resolution.',true); return;
   }
+  if (!state.photos.length) {
+    try {
+      state.submissionId = createSubmissionId();
+      state.submissionOrder = key(state.selected);
+    } catch (err) { message(err.message, true); return; }
+  }
   state.photos.push(dataUrl);
   renderPhotos(); renderQueue();
 }
@@ -208,7 +243,9 @@ function renderPhotos() {
     const box=document.createElement('div'); box.className='photo';
     const img=document.createElement('img'); img.src=src; img.alt=`Captured photo ${i+1}`;
     const btn=document.createElement('button'); btn.textContent='Remove photo'; btn.disabled=state.busy;
-    btn.addEventListener('click',()=>{state.photos.splice(i,1);renderPhotos();renderQueue();});
+    btn.addEventListener('click',()=>{state.photos.splice(i,1);
+      if (!state.photos.length) { state.submissionId=null; state.submissionOrder=null; }
+      renderPhotos();renderQueue();});
     box.append(img,btn);wrap.append(box);
   });
   updateControls();
@@ -229,22 +266,23 @@ async function submit() {
   }
   state.busy=true; updateControls(); message('Uploading captured photographs...');
   try {
+    const prepared = getPreparedSubmission();
     const result = await callScript('uploadCameraTestPhotos', [{
-      row:3, orderNumber:'FRW-TEST-001', photos:[...state.photos]
+      row:3, orderNumber:'FRW-TEST-001', photos:prepared.photos
     }]);
     if (!result?.success) throw new Error('The upload was not confirmed.');
     message(`Success — ${result.photoCount} photo(s) saved. Column J updated.`);
-    state.photos=[]; state.selected=null; state.uploadUncertain=false; renderPhotos();
+    state.selected=null; clearBatch();
   } catch(err) {
     message(`Upload not confirmed: ${err.message}. Check Drive and J3 before trying again.`,true);
-    // Keep photos; block another attempt until the page is reloaded and Drive/J3 checked.
+    // Keep photos and submission ID; block another attempt until Drive/J3 are checked.
     state.uploadUncertain = true;
   } finally { state.busy=false; updateControls(); if (!state.uploadUncertain && !state.photos.length) refreshQueue(); }
 }
 $('authorizeBtn').addEventListener('click',authorize);
 $('startCamera').addEventListener('click',startCamera);
 $('capture').addEventListener('click',capture);
-$('clearPhotos').addEventListener('click',()=>{state.photos=[];renderPhotos();renderQueue();});
+$('clearPhotos').addEventListener('click',clearBatch);
 $('refreshQueue').addEventListener('click',refreshQueue);
 $('submit').addEventListener('click',submit);
 $('returnSelect').addEventListener('change', e=>{
@@ -254,7 +292,7 @@ $('returnSelect').addEventListener('change', e=>{
 });
 $('mode').addEventListener('change',()=>{
   state.pending=[];state.selected=null;
-  $('modeHint').textContent = $('mode').value==='test' ? 'Only the FRW Photo Test tab can receive uploads.' : 'Live returns can be viewed, but photo submissions are disabled.';
+  $('modeHint').textContent = $('mode').value==='test' ? 'Only the FRW Photo Test tab can receive uploads.' : 'Live returns can be viewed and photographed, but uploads are disabled.';
   renderQueue();refreshQueue();
 });
 // Refresh on a fixed interval; browser tabs may throttle background polling.
