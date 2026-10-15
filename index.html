@@ -249,5 +249,101 @@
   }
 </script>
 
+<!-- FRW Test Return Queue -->
+<hr>
+<h3>Test Return</h3>
+
+<button onclick="loadFRWTestReturn()">
+  Load Test Return
+</button>
+
+<p id="testReturnStatus">Not loaded</p>
+<div id="testReturnDetails"></div>
+
+<script>
+  let frwAccessToken = null;
+
+  // Retain the token in memory after authorization.
+  // Do not save it to localStorage or GitHub.
+  const originalLoadPendingReturns = loadPendingReturns;
+
+  loadPendingReturns = async function(accessToken) {
+    frwAccessToken = accessToken;
+    return originalLoadPendingReturns(accessToken);
+  };
+
+  async function loadFRWTestReturn() {
+    const status = document.getElementById(
+      'testReturnStatus'
+    );
+
+    const details = document.getElementById(
+      'testReturnDetails'
+    );
+
+    if (!frwAccessToken) {
+      status.textContent =
+        'Click Authorize FRW Returns first.';
+      return;
+    }
+
+    const url =
+      'https://script.googleapis.com/v1/scripts/' +
+      encodeURIComponent(FRW_DEPLOYMENT_ID) +
+      ':run';
+
+    status.textContent = 'Loading test return...';
+
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer ' + frwAccessToken,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          function: 'getTestPendingRejects',
+          parameters: []
+        })
+      });
+
+      const data = await response.json();
+
+      if (!response.ok || data.error) {
+        status.textContent = 'API request failed';
+        details.textContent =
+          JSON.stringify(data.error || data, null, 2);
+        return;
+      }
+
+      const returns = data.response?.result || [];
+
+      if (!returns.length) {
+        status.textContent = 'No test return found.';
+        details.textContent = '';
+        return;
+      }
+
+      const item = returns[0];
+
+      status.textContent = 'Test return loaded successfully';
+
+      // Use textContent rather than injecting spreadsheet
+      // values as HTML.
+      details.textContent =
+        'Order: ' + item.orderNumber + '\n' +
+        'Customer: ' + item.customer + '\n' +
+        'SKU: ' + item.sku + '\n' +
+        'Spreadsheet row: ' + item.row;
+
+      details.style.whiteSpace = 'pre-line';
+
+    } catch (error) {
+      status.textContent = 'Connection failed';
+      details.textContent = error.message;
+    }
+  }
+</script>
+
 </body>
 </html>
