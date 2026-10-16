@@ -37,17 +37,11 @@
 <body>
 <main>
   <header>
-    <div><h1>FRW Return Photo Capture</h1><div class="muted">One-station reject photo workflow</div></div>
+    <div><h1>FRW Return Photo Capture</h1><div class="muted">Production reject photo workflow</div></div>
     <div class="row"><span id="authStatus" class="pill">Not authorized</span><button id="authorizeBtn">Authorize FRW Returns</button></div>
   </header>
 
-  <section class="panel">
-    <div class="row">
-      <label for="mode"><strong>Mode</strong></label>
-      <select id="mode"><option value="test">Test Mode</option><option value="live">Live Mode (upload disabled)</option></select>
-      <span id="modeHint" class="muted">Only the FRW Photo Test tab can receive uploads.</span>
-    </div>
-  </section>
+  <section class="panel"><strong>Live Returns</strong> — Read-only staging. Photo uploads remain disabled until approved.</section>
 
   <div class="layout">
     <section class="panel">
@@ -69,234 +63,204 @@
       <div class="row"><label for="returnSelect">Pending return:</label><select id="returnSelect" disabled><option>No returns loaded</option></select></div>
       <div id="currentOrder" class="order">No return selected.</div>
       <p class="muted">Queue checks approximately every 10 seconds. The current return stays selected while photos are being captured.</p>
-      <div class="row"><button id="refreshQueue" disabled>Refresh Queue</button><button id="submit" class="primary" disabled>Submit Photos</button></div>
+      <div class="row"><button id="refreshQueue" disabled>Refresh Queue</button><button id="submit" class="primary" disabled>Uploads Disabled</button><button id="checkStatus" disabled>Check Submission Status</button><button id="retry" disabled>Retry Same Batch</button></div>
       <p id="message" role="status" aria-live="polite"></p>
-      <p id="liveNotice" class="muted hidden">Live Mode allows camera capture but cannot upload. Production uploads remain disabled.</p>
+      
     </section>
   </div>
 </main>
 <script>
 'use strict';
-// Copy the PUBLIC OAuth Web Client ID from your existing GitHub index.html.
-// Never put a client secret, API key, or access token in this file.
+// The OAuth Client ID is public. Never place a client secret or access token in this file.
 const GOOGLE_CLIENT_ID = '758478931940-1dbs3udk5t7oeq9lgvubq9255t76kfon.apps.googleusercontent.com';
-const DEPLOYMENT_ID = 'AKfycbzzw1IQX8k5PHQj5d_BU2O4RF_Myy-Rxs8ZokOmMwJXAqnhJYM77C9csjgVRL6Ejpd4';
+// Replace the placeholder with the NEW API Executable deployment ID; do not use the old v4 ID.
+const DEPLOYMENT_ID = 'AKfycbwkDci91X3fA8L8F_jQyR4_dsIw0Y2V5InamO4Nm_hC2FhlMTbQJJgU5lUhdogBkFQn5A';
+// Two switches deliberately stay off during staging.
+const LIVE_UPLOADS_ENABLED = false;
 const SCOPES = 'https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/spreadsheets';
 const API_URL = `https://script.googleapis.com/v1/scripts/${encodeURIComponent(DEPLOYMENT_ID)}:run`;
 const $ = id => document.getElementById(id);
-const state = { token: null, expiresAt: 0, stream: null, photos: [], pending: [], selected: null, busy: false, polling: false, uploadUncertain: false, submissionId: null, submissionOrder: null };
+const state = {token:null,expiresAt:0,stream:null,photos:[],pending:[],selected:null,
+  busy:false,polling:false,uncertain:false,submissionId:null,submissionOrder:null,hashes:null};
 let tokenClient = null;
-
-function message(text, error = false) {
-  $('message').textContent = text;
-  $('message').className = error ? 'error' : '';
-}
-function authorized() { return !!state.token && Date.now() < state.expiresAt - 60000; }
+function message(text, bad=false) { $('message').textContent=text; $('message').className=bad?'error':''; }
+function authorized() { return !!state.token && Date.now()<state.expiresAt-60000; }
 function invalidateAuth() {
-  state.token = null; state.expiresAt = 0;
-  $('authStatus').textContent = 'Authorization needed';
-  $('refreshQueue').disabled = true;
-  $('queueStatus').textContent = 'Click Authorize FRW Returns to reconnect.';
-  updateControls();
+  state.token=null;state.expiresAt=0;$('authStatus').textContent='Authorization needed';
+  $('queueStatus').textContent='Authorize the FRW account to reconnect.';updateControls();
 }
 function authorize() {
-  if (!GOOGLE_CLIENT_ID.endsWith('.apps.googleusercontent.com')) {
-    message('Add your existing Google OAuth Client ID to index.html first.', true); return;
-  }
-  if (!window.google?.accounts?.oauth2) {
-    message('Google authorization library is not ready. Refresh and try again.', true); return;
-  }
+  if (DEPLOYMENT_ID.includes('REPLACE_WITH_')) {message('Set the new production deployment ID first.',true);return;}
+  if (!window.google?.accounts?.oauth2) {message('Google sign-in is not ready. Refresh the page.',true);return;}
   tokenClient ||= google.accounts.oauth2.initTokenClient({
-    client_id: GOOGLE_CLIENT_ID,
-    scope: SCOPES,
-    callback: response => {
-      if (response.error || !response.access_token) {
-        message('Authorization failed: ' + (response.error || 'no token'), true); return;
-      }
-      state.token = response.access_token;
-      state.expiresAt = Date.now() + Number(response.expires_in || 3500) * 1000;
-      $('authStatus').textContent = 'FRW authorized';
-      $('refreshQueue').disabled = false;
-      message('Connected. Monitoring for rejects.');
-      updateControls();
-      refreshQueue();
+    client_id:GOOGLE_CLIENT_ID, scope:SCOPES,
+    callback:r=>{
+      if(r.error||!r.access_token) {message('Google authorization failed.',true);return;}
+      state.token=r.access_token;state.expiresAt=Date.now()+Number(r.expires_in||3500)*1000;
+      $('authStatus').textContent='FRW authorized';message('Connected to production queue (uploads disabled).');
+      updateControls();refreshQueue();
     }
   });
-  tokenClient.requestAccessToken({prompt: 'consent'});
+  tokenClient.requestAccessToken({prompt:'consent'});
 }
-async function callScript(fn, args = []) {
-  if (!authorized()) { invalidateAuth(); throw new Error('Google authorization expired. Reauthorize.'); }
-  const res = await fetch(API_URL, {
-    method:'POST', headers: {Authorization:`Bearer ${state.token}`, 'Content-Type':'application/json'},
-    body:JSON.stringify({function:fn, parameters:args})
-  });
-  let data;
-  try { data = await res.json(); } catch { throw new Error('Google returned an unreadable response.'); }
-  if (res.status === 401 || res.status === 403) invalidateAuth();
-  if (!res.ok || data.error) throw new Error(data.error?.message || `API error ${res.status}`);
-  if (data.response?.error) throw new Error(data.response.error.message || 'Script execution failed');
-  return data.response?.result ?? null;
+async function callScript(fn,args=[]) {
+  if(!authorized()) {invalidateAuth();throw new Error('Google authorization expired. Reauthorize.');}
+  const response=await fetch(API_URL,{method:'POST',headers:{Authorization:`Bearer ${state.token}`,'Content-Type':'application/json'},
+    body:JSON.stringify({function:fn,parameters:args})});
+  let data;try {data=await response.json();} catch {throw new Error('Unreadable API response.');}
+  if(response.status===401||response.status===403) invalidateAuth();
+  if(!response.ok||data.error) throw new Error(data.error?.message||`API error ${response.status}`);
+  if(data.response?.error) throw new Error(data.response.error.message||'Script execution failed.');
+  return data.response?.result??null;
 }
-function key(item) { return `${item.row}:${item.orderNumber}`; }
-function createSubmissionId() {
-  // Generated once per photo batch and retained until successful submission or deliberate reset.
-  if (!window.crypto?.randomUUID) throw new Error('Secure submission IDs are unavailable in this browser.');
-  return crypto.randomUUID();
+function key(x) {return `${x.row}:${x.orderNumber}`;}
+function resetBatch() {
+  if(state.uncertain) {message('Check submission status before discarding photos.',true);return;}
+  state.photos=[];state.hashes=null;state.submissionId=null;state.submissionOrder=null;
+  renderPhotos();renderQueue();
 }
-function clearBatch() {
-  state.photos = [];
-  state.submissionId = null;
-  state.submissionOrder = null;
-  state.uploadUncertain = false;
-  renderPhotos();
-  renderQueue();
-}
-function getPreparedSubmission() {
-  if (!state.selected || !state.photos.length || !state.submissionId) {
-    throw new Error('Select a return and capture photographs first.');
-  }
-  if (state.submissionOrder !== key(state.selected)) {
-    throw new Error('The selected return changed. Review the photographs before proceeding.');
-  }
-  return {
-    row: state.selected.row,
-    orderNumber: state.selected.orderNumber,
-    customer: state.selected.customer,
-    sku: state.selected.sku,
-    submissionId: state.submissionId,
-    photos: [...state.photos]
-  };
+function prepared() {
+  if(!state.selected||!state.photos.length||!state.submissionId||state.submissionOrder!==key(state.selected))
+    throw new Error('Select the correct return and capture photographs first.');
+  return {row:state.selected.row,orderNumber:state.selected.orderNumber,
+    customer:state.selected.customer,sku:state.selected.sku,submissionId:state.submissionId,photos:[...state.photos]};
 }
 function renderSelected() {
-  const el = $('currentOrder'); el.replaceChildren();
-  if (!state.selected) { el.textContent = 'No pending return selected.'; return; }
-  const title = document.createElement('strong'); title.textContent = `Order #${state.selected.orderNumber}`;
-  const customer = document.createElement('div'); customer.textContent = state.selected.customer || 'Unknown customer';
-  const sku = document.createElement('div'); sku.textContent = state.selected.sku || 'No SKU';
-  const row = document.createElement('div'); row.className = 'muted'; row.textContent = `Spreadsheet row ${state.selected.row}`;
-  el.append(title, customer, sku, row);
+  const el=$('currentOrder');el.replaceChildren();
+  if(!state.selected) {el.textContent='No pending return selected.';return;}
+  for (const [label,value] of [['Order #',state.selected.orderNumber],['Customer: ',state.selected.customer],
+    ['SKU: ',state.selected.sku],['Spreadsheet row: ',state.selected.row]]) {
+      const div=document.createElement('div');div.textContent=label+value;el.append(div);
+    }
 }
 function renderQueue() {
-  const select = $('returnSelect'); select.replaceChildren();
-  if (!state.pending.length) {
-    select.add(new Option('No pending rejects', '')); select.disabled = true;
-  } else {
-    for (const item of state.pending) select.add(new Option(`${item.orderNumber} — ${item.customer}`, key(item)));
-    select.disabled = state.busy || state.photos.length > 0;
-    if (state.selected) select.value = key(state.selected);
-  }
-  renderSelected(); updateControls();
+  const select=$('returnSelect');select.replaceChildren();
+  if(!state.pending.length) select.add(new Option('No pending rejects',''));
+  else for(const item of state.pending) select.add(new Option(`${item.orderNumber} — ${item.customer}`,key(item)));
+  if(state.selected) select.value=key(state.selected);
+  select.disabled=!state.pending.length||state.busy||state.photos.length>0||state.uncertain;
+  renderSelected();updateControls();
 }
 async function refreshQueue() {
-  if (!authorized() || state.polling || state.busy) return;
-  state.polling = true;
+  if(!authorized()||state.polling||state.busy) return;
+  state.polling=true;
   try {
-    const fn = $('mode').value === 'test' ? 'getTestPendingRejects' : 'getPendingRejects';
-    const results = await callScript(fn);
-    if (!Array.isArray(results)) throw new Error('Unexpected queue response.');
-    state.pending = results;
-    // Don't swap orders while an employee has captured photographs.
-    if (!state.photos.length) {
-      const current = state.selected && results.find(x => key(x) === key(state.selected));
-      state.selected = current || results[0] || null;
+    const results=await callScript('getPendingRejects');
+    if(!Array.isArray(results)) throw new Error('Unexpected queue response.');
+    state.pending=results;
+    if(!state.photos.length&&!state.uncertain) {
+      const current=state.selected&&results.find(x=>key(x)===key(state.selected));
+      state.selected=current||results[0]||null;
     }
-    $('queueStatus').textContent = results.length ? `${results.length} return(s) awaiting photos` : 'Monitoring — no pending rejects';
+    $('queueStatus').textContent=results.length?`${results.length} reject(s) awaiting photos`:'Monitoring — no pending rejects';
     renderQueue();
-  } catch (err) {
-    $('queueStatus').textContent = 'Queue connection error';
-    message(err.message, true);
-  } finally { state.polling = false; }
+  }catch(err){$('queueStatus').textContent='Queue connection error';message(err.message,true);}
+  finally{state.polling=false;}
 }
-async function startCamera() {
-  try {
-    if (state.stream) state.stream.getTracks().forEach(t => t.stop());
-    const stream = await navigator.mediaDevices.getUserMedia({video:{width:{ideal:1920},height:{ideal:1080}},audio:false});
-    state.stream = stream;
-    $('camera').srcObject = stream;
-    await $('camera').play();
-    $('cameraStatus').textContent = 'Camera connected';
-    updateControls();
-  } catch(err) { $('cameraStatus').textContent = `Camera error: ${err.message}`; }
+async function startCamera(){
+  try{
+    if(state.stream)state.stream.getTracks().forEach(t=>t.stop());
+    state.stream=await navigator.mediaDevices.getUserMedia({video:{width:{ideal:1920},height:{ideal:1080}},audio:false});
+    $('camera').srcObject=state.stream;await $('camera').play();
+    $('cameraStatus').textContent='Camera connected';updateControls();
+  }catch(err){$('cameraStatus').textContent=`Camera error: ${err.message}`;}
 }
-function capture() {
-  const video = $('camera');
-  if (!state.selected || !video.videoWidth || state.photos.length >= 5 || state.busy) return;
-  const canvas = document.createElement('canvas'); canvas.width=video.videoWidth; canvas.height=video.videoHeight;
+function photoBytes(dataUrl){return Math.ceil((dataUrl.split(',')[1]?.length||0)*.75);}
+function capture(){
+  const video=$('camera');if(!state.selected||!video.videoWidth||state.photos.length>=5||state.busy||state.uncertain)return;
+  const canvas=document.createElement('canvas');canvas.width=video.videoWidth;canvas.height=video.videoHeight;
   canvas.getContext('2d').drawImage(video,0,0);
-  const dataUrl = canvas.toDataURL('image/jpeg',.85);
-  // Avoid queuing a photo larger than the Apps Script test-upload allowance.
-  if (Math.ceil((dataUrl.length - 23) * .75) > 5 * 1024 * 1024) {
-    message('Photo too large. Reduce camera resolution.',true); return;
+  const data=canvas.toDataURL('image/jpeg',.82);
+  if(photoBytes(data)>4*1024*1024) {message('Photo exceeds the 4 MB limit; reduce camera resolution.',true);return;}
+  if(state.photos.reduce((sum,x)=>sum+photoBytes(x),0)+photoBytes(data)>12*1024*1024){message('Photo batch exceeds 12 MB.',true);return;}
+  if(!state.photos.length){
+    if(!crypto?.randomUUID) {message('Secure submission IDs unavailable.',true);return;}
+    state.submissionId=crypto.randomUUID();state.submissionOrder=key(state.selected);
   }
-  if (!state.photos.length) {
-    try {
-      state.submissionId = createSubmissionId();
-      state.submissionOrder = key(state.selected);
-    } catch (err) { message(err.message, true); return; }
+  state.photos.push(data);state.hashes=null;renderPhotos();renderQueue();
+}
+function renderPhotos(){
+  const wrap=$('thumbnails');wrap.replaceChildren();
+  state.photos.forEach((src,i)=>{
+    const box=document.createElement('div');box.className='photo';
+    const img=document.createElement('img');img.src=src;img.alt=`Captured photo ${i+1}`;
+    const btn=document.createElement('button');btn.textContent='Remove photo';btn.disabled=state.busy||state.uncertain;
+    btn.addEventListener('click',()=>{
+      if(state.busy||state.uncertain)return;
+      state.photos.splice(i,1);state.hashes=null;
+      // Any edit creates a fresh batch ID to avoid reusing a partial prior submission.
+      state.submissionId=state.photos.length?crypto.randomUUID():null;
+      state.submissionOrder=state.photos.length?key(state.selected):null;
+      renderPhotos();renderQueue();
+    });box.append(img,btn);wrap.append(box);
+  });updateControls();
+}
+function updateControls(){
+  $('capture').disabled=state.busy||state.uncertain||!state.selected||!state.stream||state.photos.length>=5;
+  $('clearPhotos').disabled=state.busy||state.uncertain||!state.photos.length;
+  $('submit').disabled=state.busy||state.uncertain||!LIVE_UPLOADS_ENABLED||!authorized()||!state.selected||!state.photos.length;
+  $('submit').textContent=LIVE_UPLOADS_ENABLED?'Submit Photos':'Uploads Disabled';
+  $('refreshQueue').disabled=state.busy||!authorized();
+  $('checkStatus').disabled=state.busy||!state.uncertain||!authorized();
+  $('retry').disabled=state.busy||!state.uncertain||!LIVE_UPLOADS_ENABLED||!authorized();
+}
+async function computeHashes(){
+  if(state.hashes)return state.hashes;
+  const hashes=[];
+  for(const photo of state.photos){
+    const bytes=Uint8Array.from(atob(photo.split(',')[1]),c=>c.charCodeAt(0));
+    const digest=await crypto.subtle.digest('SHA-256',bytes);
+    hashes.push(Array.from(new Uint8Array(digest),b=>b.toString(16).padStart(2,'0')).join(''));
   }
-  state.photos.push(dataUrl);
-  renderPhotos(); renderQueue();
+  state.hashes=hashes;return hashes;
 }
-function renderPhotos() {
-  const wrap = $('thumbnails'); wrap.replaceChildren();
-  state.photos.forEach((src,i) => {
-    const box=document.createElement('div'); box.className='photo';
-    const img=document.createElement('img'); img.src=src; img.alt=`Captured photo ${i+1}`;
-    const btn=document.createElement('button'); btn.textContent='Remove photo'; btn.disabled=state.busy;
-    btn.addEventListener('click',()=>{state.photos.splice(i,1);
-      if (!state.photos.length) { state.submissionId=null; state.submissionOrder=null; }
-      renderPhotos();renderQueue();});
-    box.append(img,btn);wrap.append(box);
-  });
-  updateControls();
-}
-function updateControls() {
-  const test = $('mode').value === 'test';
-  $('capture').disabled = state.busy || !state.selected || !state.stream || state.photos.length>=5;
-  $('clearPhotos').disabled = state.busy || !state.photos.length;
-  $('submit').disabled = state.busy || !test || !authorized() || !state.selected || !state.photos.length || state.uploadUncertain;
-  $('submit').textContent = test ? 'Submit Test Photos' : 'Live Upload Disabled';
-  $('liveNotice').classList.toggle('hidden',test);
-  $('mode').disabled = state.busy || state.photos.length>0;
-}
-async function submit() {
-  if ($('mode').value !== 'test' || !state.selected || !state.photos.length || !authorized() || state.busy) return;
-  if (state.selected.orderNumber !== 'FRW-TEST-001' || state.selected.row !== 3) {
-    message('The selected test return did not match the expected test record.',true); return;
-  }
-  state.busy=true; updateControls(); message('Uploading captured photographs...');
-  try {
-    const prepared = getPreparedSubmission();
-    const result = await callScript('uploadCameraTestPhotos', [{
-      row:3, orderNumber:'FRW-TEST-001', photos:prepared.photos
-    }]);
-    if (!result?.success) throw new Error('The upload was not confirmed.');
+async function sendPhotos(){
+  state.busy=true;updateControls();message('Uploading photographs. Do not close this tab...');
+  try{
+    const submission=prepared();
+    const result=await callScript('uploadReturnPhotos',[submission]);
+    if(!result?.success)throw new Error('Upload was not confirmed.');
     message(`Success — ${result.photoCount} photo(s) saved. Column J updated.`);
-    state.selected=null; clearBatch();
-  } catch(err) {
-    message(`Upload not confirmed: ${err.message}. Check Drive and J3 before trying again.`,true);
-    // Keep photos and submission ID; block another attempt until Drive/J3 are checked.
-    state.uploadUncertain = true;
-  } finally { state.busy=false; updateControls(); if (!state.uploadUncertain && !state.photos.length) refreshQueue(); }
+    state.uncertain=false;state.selected=null;state.photos=[];state.hashes=null;state.submissionId=null;state.submissionOrder=null;
+    renderPhotos();renderQueue();
+  }catch(err){state.uncertain=true;message(`Upload not confirmed: ${err.message}. Check status; do not capture a new batch.`,true);}
+  finally{state.busy=false;updateControls();if(!state.uncertain&&!state.photos.length)refreshQueue();}
+}
+async function submit(){if(!LIVE_UPLOADS_ENABLED||!authorized()||state.busy||state.uncertain)return;await sendPhotos();}
+async function checkStatus(){
+  if(!state.uncertain||!authorized()||state.busy)return;
+  state.busy=true;updateControls();
+  try{
+    const req=prepared(), hashes=await computeHashes();
+    const result=await callScript('getSubmissionStatus',[{
+      row:req.row,orderNumber:req.orderNumber,submissionId:req.submissionId,
+      expectedPhotoCount:hashes.length,expectedPhotoHashes:hashes
+    }]);
+    if(result?.status==='linked'){
+      message('Verified: the photos are saved and Column J is linked.');
+      state.uncertain=false;state.photos=[];state.hashes=null;state.submissionId=null;state.submissionOrder=null;state.selected=null;
+      renderPhotos();renderQueue();
+    }else if(result?.status==='review_required'){
+      message('Manual review required: '+(result.reason||'inconsistent submission')+'. Do not retry.',true);
+    }else{
+      message(`Status: ${result?.status||'unknown'}, ${result?.savedPhotoCount||0} photo(s) saved. Retry SAME batch only if needed.`,true);
+    }
+  }catch(err){message('Status check failed: '+err.message+'. Keep the photos in this tab.',true);}
+  finally{state.busy=false;updateControls();if(!state.uncertain)refreshQueue();}
 }
 $('authorizeBtn').addEventListener('click',authorize);
 $('startCamera').addEventListener('click',startCamera);
 $('capture').addEventListener('click',capture);
-$('clearPhotos').addEventListener('click',clearBatch);
+$('clearPhotos').addEventListener('click',resetBatch);
 $('refreshQueue').addEventListener('click',refreshQueue);
 $('submit').addEventListener('click',submit);
-$('returnSelect').addEventListener('change', e=>{
-  if (state.photos.length || state.busy) return;
-  state.selected = state.pending.find(x=>key(x)===e.target.value) || null;
-  renderSelected();updateControls();
+$('checkStatus').addEventListener('click',checkStatus);
+$('retry').addEventListener('click',()=>{if(state.uncertain&&LIVE_UPLOADS_ENABLED)sendPhotos();});
+$('returnSelect').addEventListener('change',e=>{
+  if(state.photos.length||state.busy||state.uncertain)return;
+  state.selected=state.pending.find(x=>key(x)===e.target.value)||null;renderSelected();updateControls();
 });
-$('mode').addEventListener('change',()=>{
-  state.pending=[];state.selected=null;
-  $('modeHint').textContent = $('mode').value==='test' ? 'Only the FRW Photo Test tab can receive uploads.' : 'Live returns can be viewed and photographed, but uploads are disabled.';
-  renderQueue();refreshQueue();
-});
-// Refresh on a fixed interval; browser tabs may throttle background polling.
-setInterval(()=>{ if(authorized()) refreshQueue(); else if(state.token) invalidateAuth(); },10000);
+setInterval(()=>{if(authorized())refreshQueue();else if(state.token)invalidateAuth();},10000);
 renderQueue();
 </script>
 </body>
